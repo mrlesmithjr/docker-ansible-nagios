@@ -1,0 +1,159 @@
+---
+- hosts: localhost
+  become: true
+  connection: local
+  vars:
+    gosu_ver: '1.9'
+    nagios_dl_file: 'nagios-{{ nagios_ver }}.tar.gz'
+    nagios_plugins_dl_file: 'nagios-plugins-{{ nagios_plugins_ver }}.tar.gz'
+    nagios_plugins_uri: 'https://nagios-plugins.org/download'
+    nagios_uri: 'https://assets.nagios.com/downloads/nagioscore/releases'
+  roles:
+  tasks:
+    - name: Installing apt-transport-https
+      apt:
+        name: "apt-transport-https"
+        state: "present"
+
+    - name: Installing ca-certificates
+      apt:
+        name: "ca-certificates"
+        state: "latest"
+
+    - name: Installing dumb-init
+      apt:
+        deb: "https://github.com/Yelp/dumb-init/releases/download/v1.0.2/dumb-init_1.0.2_amd64.deb"
+
+    - name: Installing gosu
+      get_url:
+        url: "https://github.com/tianon/gosu/releases/download/{{ gosu_ver }}/gosu-amd64"
+        dest: "/usr/local/bin/gosu"
+        mode: 0755
+
+    - name: Installing Pre-Reqs
+      apt:
+        name: "{{ item }}"
+        state: "present"
+        install_recommends: false
+      with_items:
+         - 'apache2'
+         - 'build-essential'
+         - 'libapache2-mod-php7.0'
+         - 'libgd-dev'
+         - 'mailutils'
+         - 'php-gd'
+         - 'php'
+         - 'postfix'
+         - 'python-passlib'
+         - 'runit'
+         - 'unzip'
+
+    - name: Adding Nagios User
+      user:
+       name: "nagios"
+       state: "present"
+
+    - name: Adding Nagios Group
+      group:
+       name: "nagcmd"
+       state: "present"
+
+    - name: Adding Nagios User To Groups
+      user:
+        name: "nagios"
+        group: "{{ item }}"
+        append: yes
+      with_items:
+        - 'nagios'
+        - 'nagcmd'
+
+    - name: Downloading Nagios Core
+      get_url:
+        url: "{{ nagios_uri }}/{{ nagios_dl_file }}"
+        dest: "/tmp/{{ nagios_dl_file }}"
+
+    - name: Extracting Nagios Core
+      unarchive:
+        src: "/tmp/{{ nagios_dl_file }}"
+        dest: "/opt"
+
+    - name: Downloading Nagios Plugins
+      get_url:
+        url: "{{ nagios_plugins_uri }}/{{ nagios_plugins_dl_file }}"
+        dest: "/tmp/{{ nagios_plugins_dl_file }}"
+
+    - name: Extracting Nagios Plugins
+      unarchive:
+        src: "/tmp/{{ nagios_plugins_dl_file }}"
+        dest: "/opt"
+
+    - name: Configuring Nagios Core
+      command: "./configure --with-command-group=nagcmd --with-mail=/usr/bin/sendmail --with-httpd-conf=/etc/apache2/"
+      args:
+        chdir: "/opt/nagios-{{ nagios_ver }}"
+
+    - name: Building Nagios Core
+      make:
+        chdir: "/opt/nagios-{{ nagios_ver }}"
+        target: "{{ item }}"
+      with_items:
+        - 'all'
+        - 'install'
+        - 'install-init'
+        - 'install-config'
+        - 'install-commandmode'
+        - 'install-webconf'
+
+    - name: Copying Nagios Eventhandlers
+      command: "cp -R /opt/nagios-{{ nagios_ver }}/contrib/eventhandlers/ /usr/local/nagios/libexec/"
+
+    - name: Ensuring Nagios Permissions
+      file:
+        path: "/usr/local/nagios/eventhandlers"
+        state: "directory"
+        owner: "nagios"
+        group: "nagios"
+        recurse: yes
+
+    - name: Creating Nagios Apache Symlink
+      file:
+        src: "/etc/apache2/nagios.conf"
+        dest: "/etc/apache2/sites-available/nagios.conf"
+        state: "link"
+
+    - name: Enabling Nagios Web Site
+      command: "a2ensite nagios"
+
+    - name: Enabling Apache Modules
+      apache2_module:
+        name: "{{ item }}"
+        state: "present"
+      with_items:
+        - 'rewrite'
+        - 'cgi'
+
+    - name: Adding Default Nagios Web Login
+      htpasswd:
+        path: "/usr/local/nagios/etc/htpasswd.users"
+        name: "{{ nagiosadmin_username }}"
+        password: "{{ nagiosadmin_password }}"
+
+    - name: Configuring Nagios Plugins
+      command: "./configure --with-nagios-user=nagios --with-nagios-group=nagios"
+      args:
+        chdir: "/opt/nagios-plugins-{{ nagios_plugins_ver }}"
+
+    - name: Building Nagios Plugins
+      make:
+        chdir: "/opt/nagios-plugins-{{ nagios_plugins_ver }}"
+        target: "{{ item }}"
+      with_items:
+        - 'install'
+
+    - name: Cleaning Up
+      file:
+        path: "/tmp/{{ item }}"
+        state: "absent"
+      with_items:
+        - '{{ nagios_dl_file }}'
+        - '{{ nagios_plugins_dl_file }}'
